@@ -8,11 +8,24 @@ Fork-local заметки. Апстрим этот файл не создает,
 Проект полностью собирается и работает на этой машине.
 Расположение: `D:\.VS\Projects\aspia-extreem`.
 
-Собранные артефакты в `builds\local-win-x64\Release\`:
+**Версия: 3.4.3** (синхронизировано с апстримом 18.11.2026, см. раздел «Синхронизация»).
+
+### Где что лежит
+
+| Что | Путь |
+|---|---|
+| C++-форк Aspia (эта репа, ветка `extreme`) | `D:\.VS\Projects\aspia-extreem` |
+| Проект обвязки на .NET (RadNET) | `E:\11.R-Keeper\3.RadNET` |
+
+`E:\11.R-Keeper\3.RadNET` - отныне постоянный дом .NET-проекта. Там пока пусто, работа
+в нём начнётся после решения по этапу 0 (см. `ENGINE-DLL-SPLIT.md`).
+
+Собранные артефакты в `builds\local-win-x64\Release\` (от сборки версии 3.0.0, до синхронизации
+с 3.4.3 - после неё требуется пересборка, см. ниже):
 
 - `aspia_client.exe`, `aspia_host.exe`, `aspia_router.exe`, `aspia_relay.exe`
 - `aspia_virtual_display.dll` - драйвер виртуального дисплея (Indirect Display Driver на базе Microsoft IddSampleDriver)
-- `aspia_base_tests.exe` - 626 тестов, все проходят
+- `aspia_base_tests.exe` - 626 тестов, все проходили на 3.0.0
 - `aspia_sha256.exe`, `qtprotoc.exe`
 
 Проверено запуском:
@@ -25,6 +38,56 @@ Fork-local заметки. Апстрим этот файл не создает,
 Хронометраж пересборки с нуля (зависимости уже в кеше): конфигурация около 40 секунд,
 полная сборка около 9-10 минут. Первый холодный прогон с установкой зависимостей занял
 около 2 часов, из них установка и сборка vcpkg-пакетов - 1.1 часа.
+
+## Синхронизация с апстримом (18.11.2026) - версия 3.4.3
+
+Форк отставал на 993 коммита: апстрим ушёл с 3.0.0 до 3.4.3 и добавил Android-клиент и Android-хост.
+
+Процедура (remote `upstream` появился впервые, раньше его в клоне не было):
+
+```bash
+git remote add upstream https://github.com/dchapyshev/aspia.git
+git fetch upstream --prune --tags
+git checkout master && git merge --ff-only upstream/master && git push origin master
+git checkout extreme && git rebase master && git push --force-with-lease origin extreme
+git submodule update --init
+```
+
+- `master` форка - чистый апстрим (0 своих коммитов), поэтому обновляется `--ff-only`.
+- `extreme` = master + наши доки (`HERMES.md`, `ENGINE-DLL-SPLIT.md`, `.hermes/`). Rebase прошёл
+  без конфликтов: апстрим эти файлы не создаёт, в `.gitignore` он добавил только `/.claude/`.
+- Бэкап перед rebase: ветка `extreme-backup-YYYYMMDD`.
+- `git push --force-with-lease` может ругнуться `stale info` - это значит, что локальное знание об
+  `origin/extreme` устарело; достаточно `git fetch origin` и повторить push.
+- Подмодуль `vcpkg4aspia` обязателен к обновлению, иначе дерево грязное и зависимости не те:
+  апстрим перевёл его с `b804ff8b6d` на `3bfb0ca094` (vcpkg `2020.04-20648-g3bfb0ca094`).
+
+**Что изменилось в коде за эти 993 коммита (важно для дальнейшей работы):**
+
+- Версия 3.4.3. Появился Android: `source/client/android` (68 файлов / 15 542 строки), `host/android`,
+  пресеты `android-base` / `ci-android-base`, опция `ASPIA_GOOGLE_PLAY`.
+- **Автор сам выделил ядровые библиотеки**: `aspia_client_core` (static, почти весь клиент вместе
+  с виджетами вкладок), `aspia_host_core` (static, включая `host/ui`), `aspia_router_core`,
+  `aspia_relay_core`, `aspia_common`. Exe стали тонкими - в них остались main/application.
+- В проекте появилась настоящая DLL: `host/credentials/CMakeLists.txt` собирает `aspia_credentials`
+  SHARED (COM credential provider для входа в систему через Aspia). Это COM, не C-ABI движка -
+  как образец для нашего ABI не годится, но как факт сборки DLL в этом дереве полезно.
+- **openh264 выпилен полностью**: остались только `video_encoder_vpx` / `video_decoder_vpx`
+  (VP8/VP9 через libvpx). В `vcpkg.json` добавлен feature `realtime` у libvpx, убраны `openh264`
+  и `inipp`, у curl появились фичи `ssl`/`sspi`, тестовая сборка требует `qtbase[testlib]`.
+- Вместо `inipp` свой парсер: `base/ini_file.{cc,h}`. Настройки клиента - `client/storage/instance_settings`
+  (INI), настройки службы хоста пишутся в JSON (`host/settings_util.cc`).
+- Адресная книга переехала в `client/storage/` и разбита по файлам: `database_local_hosts`,
+  `database_profiles`, `database_credentials`, `database_router`, `database_settings`,
+  `master_password`, `backup` / `auto_backup`, `credential_file`. Схема по-прежнему SQLite,
+  пароли - DPAPI, мастер-пароль - Argon2id (параметры те же).
+- Появились `client/mcp` (MCP-сервер с набором tools, 43 файла) и `base/update` (2 381 строка).
+- Тесты теперь на каждый модуль: `aspia_base_tests`, `aspia_client_tests`, `aspia_host_tests`,
+  `aspia_common_tests`, `aspia_relay_tests`, `aspia_router_tests` (544 макроса TEST/TEST_F суммарно;
+  UI-тесты клиента требуют `Qt6::QOffscreenIntegrationPlugin`).
+- Артефакты в `builds/local-win-x64` - от 3.0.0. Кеш CMake и vcpkg от другого набора зависимостей,
+  поэтому после синхронизации нужна переконфигурация и переустановка пакетов vcpkg (по времени -
+  как холодный прогон, до пары часов), затем полная пересборка.
 
 ## Окружение, которое выяснилось по ходу
 
@@ -68,10 +131,14 @@ Fork-local заметки. Апстрим этот файл не создает,
 - Движок уже отделён от UI слоем `Worker` (`base/threading/worker.h`): свой поток, обмен
   `QByteArray` по 13 каналам и `SharedFrame` (BGRA + stride). Новую архитектуру строить не надо,
   нужен C-фасад поверх воркеров.
-- Без GUI движок работает: `base/tests_main.cc` поднимает только `QCoreApplication` +
-  `AsioEventDispatcher` (свой цикл событий на asio) и прогоняет 626 тестов.
-- Размеры: транспорт (`base/net`+`peer`+`crypto`+`threading`+`ipc`) 136 файлов / 27 217 строк;
-  движок клиента 17 188; UI клиента 38 181 (69 %); движок хоста 50 209; UI хоста 7 327 (13 %).
+- Без GUI движок работает: тестовые бинарники поднимают только `QCoreApplication` +
+  `AsioEventDispatcher` (свой цикл событий на asio) и прогоняют тесты модуля.
+- Автор сам провёл границу библиотек: `aspia_client_core`, `aspia_host_core`, `aspia_router_core`,
+  `aspia_relay_core` - статические библиотеки, exe тонкие (main/application).
+- Размеры на 3.4.3: транспорт (`base/net`+`peer`+`crypto`+`threading`+`ipc`) 134 файла / 27 345 строк;
+  клиент всего 96 732 (UI 50 332 - 52 %, из них `client/desktop` 45 383 и `client/android` 15 542);
+  хост всего 74 647 (UI 9 283 - 13 %); `base` 87 334, из кодека 8 075. Подробная таблица - в
+  `ENGINE-DLL-SPLIT.md`.
 - Три отдельных DLL со статическим Qt невозможны: в процессе окажется несколько копий QtCore
   (свой `QCoreApplication::self`, свой `QThreadData`), межмодульные `QObject` ломаются. Либо
   динамический Qt (`x64-windows`, `/MD`, `Qt6Core.dll`) в отдельном preset, либо одна engine-DLL.

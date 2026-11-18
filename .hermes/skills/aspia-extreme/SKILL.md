@@ -27,12 +27,37 @@ C++-библиотеки, а UI/логику быстро пишем в .NET 10 
 
 ## Расположение (строго)
 
-- Проект: `D:\.VS\Projects\aspia-extreem`
+- Проект (C++): `D:\.VS\Projects\aspia-extreem`
+- Проект обвязки на .NET (RadNET): `E:\11.R-Keeper\3.RadNET` — постоянный дом .NET-части
 - `vcpkg4aspia` — РЕАЛЬНАЯ папка внутри проекта (не junction!)
 - Собранное: `builds\local-win-x64\Release\`
 - Журнал форка: `HERMES.md` в корне проекта (что сделано, чем проверено, план этапа)
-- Все проекты пользователя живут в `D:\.VS\Projects\<name>`; ничего не разбрасывать по
-  `D:\NEURO` или `C:\Temp`; временные файлы убирать после работы
+- Разбор выноса движков в DLL: `ENGINE-DLL-SPLIT.md` в корне проекта
+- Все C++-проекты пользователя живут в `D:\.VS\Projects\<name>`; временные файлы убирать после работы
+
+## Синхронизация с апстримом (проверено на 3.4.3)
+
+Remote `upstream` в клоне не настроен по умолчанию — добавить один раз:
+
+```bash
+git remote add upstream https://github.com/dchapyshev/aspia.git
+git fetch upstream --prune --tags
+git checkout master && git merge --ff-only upstream/master && git push origin master
+git branch extreme-backup-$(date +%Y%m%d)   # бэкап перед rebase
+git checkout extreme && git rebase master && git push --force-with-lease origin extreme
+git submodule update --init
+```
+
+- `master` форка всегда чистый апстрим (0 своих коммитов) — только `--ff-only`.
+- `extreme` = master + fork-local файлы (`HERMES.md`, `ENGINE-DLL-SPLIT.md`, `.hermes/`), поэтому
+  rebase проходит без конфликтов; апстрим эти файлы не создаёт.
+- `push --force-with-lease` может ответить `! [rejected] ... (stale info)` — просто `git fetch origin`
+  и повторить.
+- Подмодуль `vcpkg4aspia` обязателен: без `git submodule update` дерево грязное (` M vcpkg4aspia`),
+  а зависимости не те. На 3.4.3 апстрим перешёл на `3bfb0ca094`.
+- После синхронизации сборка НЕ готова: `vcpkg.json` сменился (убраны `openh264`, `inipp`,
+  добавлены `qtbase[testlib]`, фичи curl, `libxcb`), поэтому нужна переустановка пакетов vcpkg
+  (до пары часов) и полная пересборка.
 
 ## Сборка (рабочая последовательность)
 
@@ -52,7 +77,9 @@ cmake --build builds\local-win-x64 --config Release -j 8
 `vcpkg4aspia\installed\x64-windows-static` + бинарный кеш `%LOCALAPPDATA%\vcpkg\archives`.
 
 Артефакты: `aspia_client.exe`, `aspia_host.exe`, `aspia_router.exe`, `aspia_relay.exe`,
-`aspia_virtual_display.dll`, `aspia_base_tests.exe` (626 тестов), `aspia_sha256.exe`, `qtprotoc.exe`.
+`aspia_virtual_display.dll`, `aspia_credentials.dll` (COM credential provider),
+шесть тестовых бинарников (`aspia_base_tests`, `aspia_client_tests`, `aspia_host_tests`,
+`aspia_common_tests`, `aspia_relay_tests`, `aspia_router_tests`), `aspia_sha256.exe`, `qtprotoc.exe`.
 
 ## Грабли (все проверены на практике)
 
@@ -98,12 +125,17 @@ cmake --build builds\local-win-x64 --config Release -j 8
 ## Проверка результата
 
 ```
-aspia_client.exe --version         # Client 3.0.0.<build>
-aspia_host.exe --version           # Host 3.0.0.<build>
+aspia_client.exe --version         # Client 3.4.3.<build>
+aspia_host.exe --version           # Host 3.4.3.<build>
 aspia_router.exe --create-config   # создаёт C:/ProgramData/aspia/router.conf + router.db3
 aspia_relay.exe --create-config
-aspia_base_tests.exe               # 626 тестов, все PASSED
+aspia_base_tests.exe               # тесты базы
+aspia_client_tests.exe / aspia_host_tests.exe / aspia_common_tests.exe
+aspia_relay_tests.exe / aspia_router_tests.exe
 ```
+
+С 3.4.3 тестовые бинарники отдельные на каждый модуль (всего 544 макроса TEST/TEST_F; в 3.0.0 было
+626 тестов в одном `aspia_base_tests`). UI-тесты клиента требуют `Qt6::QOffscreenIntegrationPlugin`.
 
 Host при запуске без сервиса пишет `Failed to connect to the named pipe "org.aspia.host.ui"` — это
 НОРМА для неустановленного хоста (UI-часть не поднята), не считать ошибкой сборки.
@@ -119,21 +151,29 @@ Host при запуске без сервиса пишет `Failed to connect t
 - `source/common/` — общие утилиты и ресурсы
 - UI на Qt (виджеты) — именно его планируется заменить обвязкой на .NET
 
-### Где реально проходит граница движок/UI (замерено)
+### Где реально проходит граница движок/UI (замерено на 3.4.3)
 
 - Движок уже отделён слоем `Worker` (`base/threading/worker.h`, QObject + свой поток). Обмен с UI —
   `QByteArray` по 13 каналам `CHANNEL_ID_*` и `SharedFrame` (BGRA + stride). Резать по живому не нужно,
   нужен C-фасад поверх воркеров.
-- Без GUI движок живёт: `base/tests_main.cc` поднимает только `QCoreApplication` + `AsioEventDispatcher`
-  (свой цикл событий на asio) и прогоняет 626 тестов.
-- Строк по дереву: транспорт (`base/net`+`peer`+`crypto`+`threading`+`ipc`) — 136 файлов / 27 217;
-  движок клиента — 17 188; UI клиента — 38 181 (69 %, 143 файла с виджетами);
-  движок хоста — 50 209; UI хоста — 7 327 (13 %); `common` — 28 232.
-- В `base` виджеты трогает ровно один файл — `base/gui_application.cc` (837 строк). QtNetwork и QtSql
+- Без GUI движок живёт: каждый тестовый бинарник поднимает только `QCoreApplication` +
+  `AsioEventDispatcher` (свой цикл событий на asio) и гоняет тесты модуля.
+- **Автор сам выделил ядровые библиотеки**: `aspia_client_core`, `aspia_host_core`, `aspia_router_core`,
+  `aspia_relay_core`, `aspia_common` — статические, exe тонкие (main/application). Но в client_core
+  лежат И движок, И виджеты вкладок, то есть граница проведена по линии «библиотека/exe», а не
+  «движок/UI».
+- Строк по дереву: транспорт (`base/net`+`peer`+`crypto`+`threading`+`ipc`) — 134 файла / 27 345;
+  клиент всего 96 732 (UI 50 332 = 52 %, из них `client/desktop` 45 383 и `client/android` 15 542);
+  хост всего 74 647 (UI 9 283 = 13 %); `base` 87 334; `common` 31 975; `proto` 33 схемы / 4 528.
+- В `base` виджеты трогает ровно один файл — `base/gui_application.cc` (1 044 строки). QtNetwork и QtSql
   в движке не используются вообще (сеть на asio, БД на `unofficial::sqlite3`).
+- Кодеки: только VP8/VP9 через libvpx (`video_encoder_vpx` / `video_decoder_vpx`). openh264 из дерева
+  выпилен автором в 3.4.x — не искать `h264`-файлы и не тащить пакет.
 - UI хоста уже отдельный процесс: общается со службой по именованному каналу `org.aspia.host.ui`
   (`host/host_constants.cc`), протокол protobuf, транспорт `asio::windows::stream_handle` — .NET-трею
   C++-DLL не нужна вообще.
+- `host/credentials` собирается как `aspia_credentials.dll` (COM credential provider для входа в
+  систему через Aspia) — не путать с C-ABI движка.
 
 ## Вынос в DLL: грабли, проверенные разбором
 
@@ -151,9 +191,10 @@ Host при запуске без сервиса пишет `Failed to connect t
 4. **DPI awareness** ставит сам движок в `main()` (Per-Monitor V2). В .NET-хосте его ставит манифест/WPF;
    расхождение сдвигает координаты мыши и масштаб кадра.
 5. `protoc.exe` для C#-моделей лежит в `builds/local-win-x64/vcpkg_installed/x64-windows-static/tools/protobuf/`.
-   Адресная книга — обычный SQLite (`groups`/`hosts`/`routers`/`settings`), пароли — DPAPI **без entropy**
-   (`base/crypto/os_crypt_win.cc`), мастер-пароль — Argon2id 128 МиБ / 4 итерации / 1 lane + AES-256-GCM
-   (`base/crypto/password_hash.cc`), параметры надо повторить бит в бит.
+   Адресная книга живёт в `client/storage/` (файлы `database_local_hosts` / `database_profiles` /
+   `database_credentials` / `database_router` / `database_settings`) — обычный SQLite; пароли — DPAPI
+   **без entropy** (`base/crypto/os_crypt_win.cc`), мастер-пароль — Argon2id 128 МиБ / 4 итерации /
+   1 lane + AES-256-GCM (`base/crypto/password_hash.cc`), параметры надо повторить бит в бит.
 
 ## Правила работы с пользователем
 
