@@ -55,6 +55,10 @@ git submodule update --init
   и повторить.
 - Подмодуль `vcpkg4aspia` обязателен: без `git submodule update` дерево грязное (` M vcpkg4aspia`),
   а зависимости не те. На 3.4.3 апстрим перешёл на `3bfb0ca094`.
+- После обновления подмодуля — пересобрать `vcpkg.exe` (`bootstrap-vcpkg.bat -disableMetrics`) и
+  удалить сгенерированные `builds/<пресет>/source/proto/*.pb.h|*.pb.cc`. Без этого конфигурация
+  падает на `schema version 2 is not supported`, а сборка — на `Protobuf C++ gencode is built with
+  an incompatible version`. Подробности — в граблях 8 и 9.
 - После синхронизации сборка НЕ готова: `vcpkg.json` сменился (убраны `openh264`, `inipp`,
   добавлены `qtbase[testlib]`, фичи curl, `libxcb`), поэтому нужна переустановка пакетов vcpkg
   (до пары часов) и полная пересборка.
@@ -75,6 +79,28 @@ cmake --build builds\local-win-x64 --config Release -j 8
 Хронометраж на этой машине: конфигурация 40 с (при готовом кеше vcpkg) / 19 мин (первый раз);
 полная сборка с нуля 9–10 мин. Зависимости пересобирать не нужно — лежат в
 `vcpkg4aspia\installed\x64-windows-static` + бинарный кеш `%LOCALAPPDATA%\vcpkg\archives`.
+
+Замеры на 3.4.3 (18.11.2026, после синхронизации с апстримом): переустановка 78 пакетов vcpkg под
+новый `vcpkg.json` (Qt 6.11.2, libvpx, openssl) — **71 минута**; полная сборка 1579 шагов — **18 минут**;
+прогон всех тестов — ~3 минуты.
+
+**Запуск сборки только в интерактивной сессии пользователя.** Терминал Hermes работает под
+`NT AUTHORITY\СИСТЕМА` в session 0, а `vswhere.exe` 3.1.7 из VS Installer там падает с
+`error: vswhere failed with exit code: (2147942408)` / `Error 0x80070008: Недостаточно ресурсов
+памяти` — и конфигурация умирает на `-- Running vcpkg install`. Обход: запустить батник в сессии
+пользователя лаунчером `scripts/launch.cs` (WTSQueryUserToken + CreateProcessAsUser):
+
+```bat
+rem один раз собрать лаунчер (csc есть в Windows, .NET Framework)
+"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe" -nologo -out:scripts\launch.exe scripts\launch.cs
+
+rem запуск сборки в сессии 1 (номер интерактивной сессии)
+scripts\launch.exe 1 "cmd /c \"set SKIP_CONFIGURE=1 && D:\.VS\Projects\aspia-extreem\.hermes\skills\aspia-extreme\scripts\build-aspia.bat\"" "D:\.VS\Projects\aspia-extreem"
+```
+
+Лаунчер печатает pid и не ждёт завершения — прогресс смотреть в `builds\logs\build.log`.
+`VCPKG_VISUAL_STUDIO_PATH` в батнике выставлен как страховка, но одного её недостаточно:
+vcpkg всё равно форкает vswhere.
 
 Артефакты: `aspia_client.exe`, `aspia_host.exe`, `aspia_router.exe`, `aspia_relay.exe`,
 `aspia_virtual_display.dll`, `aspia_credentials.dll` (COM credential provider),
@@ -105,6 +131,25 @@ cmake --build builds\local-win-x64 --config Release -j 8
    может не находиться — вызывать по полному пути или через cmd/bat.
 7. Вывод `cmd.exe` в git-bash приходит в cp866 — читать логи с декодированием `cp866`, либо
    писать их в файл из bat с `chcp 65001`.
+8. **После смены версий зависимостей обязательно чистить сгенерированные файлы в каталоге сборки.**
+   Ninja не перегенерирует выход, который уже лежит на месте и новее `.proto`, поэтому старые
+   `builds/local-win-x64/source/proto/*.pb.h|*.pb.cc` от прошлого protoc переживают обновление
+   vcpkg и валят сборку:
+   `desktop_file.pb.h(16): fatal error C1189: #error: "Protobuf C++ gencode is built with an incompatible version of"`.
+   Лечение и профилактика перед первой сборкой после синхронизации:
+
+   ```bash
+   rm -f builds/local-win-x64/source/proto/*.pb.h builds/local-win-x64/source/proto/*.pb.cc
+   ```
+
+   Тот же класс проблем — `.moc`/`ui_*.h`/qtprotobuf-обёртки (`address_book.cc|h`) после смены
+   версии Qt: при странных ошибках компиляции в сгенерированных файлах чистить их, а не искать
+   ошибку в исходниках. Полной пересборки это не требует — пересобираются только зависящие цели.
+9. **После обновления подмодуля `vcpkg4aspia` пересобрать сам `vcpkg.exe`.** Иначе конфигурация
+   падает ещё до установки пакетов:
+   `vcpkg-tools.json: error: $ (a tool data file): document schema version 2 is not supported by this version of vcpkg`.
+   Лечение: `cmd /c bootstrap-vcpkg.bat -disableMetrics` (скачивает свежий vcpkg-tool).
+   Это не «перебутстрапливать ради починки» — версия тула обязана соответствовать ревизии портов.
 
 ## Git и коммиты в этом репозитории
 
@@ -136,6 +181,28 @@ aspia_relay_tests.exe / aspia_router_tests.exe
 
 С 3.4.3 тестовые бинарники отдельные на каждый модуль (всего 544 макроса TEST/TEST_F; в 3.0.0 было
 626 тестов в одном `aspia_base_tests`). UI-тесты клиента требуют `Qt6::QOffscreenIntegrationPlugin`.
+
+Проверенные числа на 3.4.3: base 705, host 533, client 452, router 360, relay 43, common 22.
+
+**Тесты тоже гонять в сессии пользователя** (через тот же `launch.exe`). В session 0 они падают:
+`Thread::run : 62 Check failed: com_initializer->isSucceeded()` (падает `ThreadTests.QtDispatcherIsInstalled`,
+и любой тест, поднимающий поток с Qt-диспетчером), а `--create-config` у router/relay не может
+создать конфигурацию по той же причине. В интерактивной сессии всё проходит.
+
+`--version` у `aspia_client.exe` и `aspia_host.exe` ничего не печатает: это GUI-приложения
+(`WIN32_EXECUTABLE`), у них нет stdout. Версию проверять по строке в бинарнике:
+
+```bash
+python -c "import re;print(re.findall(rb'3\.4\.\d+\.\d+', open('aspia_client.exe','rb').read())[:2])"
+```
+
+`aspia_router.exe --version` и `aspia_relay.exe --version` работают — это консольные приложения.
+
+**Конфиги сменили формат: XML -> INI.** Старые `router.conf` / `relay.conf` в `C:/ProgramData/aspia`
+от 3.0.x новая версия не читает (`IniFile::parse ... Invalid line 2`), нужен `--create-config`
+заново. У router он дополнительно требует отсутствия старых `host.pub`/`relay.pub`, иначе
+`Host public key file already exists. Continuation is impossible.` Пароль пользователя admin
+печатается один раз при создании.
 
 Host при запуске без сервиса пишет `Failed to connect to the named pipe "org.aspia.host.ui"` — это
 НОРМА для неустановленного хоста (UI-часть не поднята), не считать ошибкой сборки.

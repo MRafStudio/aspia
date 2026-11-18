@@ -20,24 +20,35 @@ Fork-local заметки. Апстрим этот файл не создает,
 `E:\11.R-Keeper\3.RadNET` - отныне постоянный дом .NET-проекта. Там пока пусто, работа
 в нём начнётся после решения по этапу 0 (см. `ENGINE-DLL-SPLIT.md`).
 
-Собранные артефакты в `builds\local-win-x64\Release\` (от сборки версии 3.0.0, до синхронизации
-с 3.4.3 - после неё требуется пересборка, см. ниже):
+Собранные артефакты в `builds\local-win-x64\Release\` (сборка 3.4.3, 18.11.2026, все свежие):
 
-- `aspia_client.exe`, `aspia_host.exe`, `aspia_router.exe`, `aspia_relay.exe`
+- `aspia_client.exe` (37,9 МБ), `aspia_host.exe` (36,6 МБ), `aspia_router.exe` (29,3 МБ), `aspia_relay.exe` (27,3 МБ)
 - `aspia_virtual_display.dll` - драйвер виртуального дисплея (Indirect Display Driver на базе Microsoft IddSampleDriver)
-- `aspia_base_tests.exe` - 626 тестов, все проходили на 3.0.0
-- `aspia_sha256.exe`, `qtprotoc.exe`
+- `aspia_credentials.dll` - COM credential provider (новое в 3.4.x)
+- шесть тестовых бинарников: `aspia_base_tests` (705 тестов), `aspia_host_tests` (533),
+  `aspia_client_tests` (452), `aspia_router_tests` (360), `aspia_relay_tests` (43), `aspia_common_tests` (22) - все проходят
+- `aspia_sha256.exe`, `aspia_signer.exe`, `qtprotoc.exe`
 
-Проверено запуском:
+Проверено запуском (18.11.2026):
 
-- client и host открывают окна, процессы отвечают
-- router по `--create-config` создает `C:/ProgramData/aspia/router.conf`, ключи и `router.db3` с пользователем
-- relay по `--create-config` создает `relay.conf`
-- версии всех модулей: 3.0.0.<номер сборки>
+- client и host поднимают окна в сессии пользователя и живут (проверено tasklist через 6 с), затем закрыты
+- версии всех модулей: 3.4.3.8691
+- router по `--create-config` создаёт INI-конфиг, ключи, `router.db3` и пользователя admin (пароль печатается один раз)
+- relay по `--create-config` создаёт `relay.conf`
 
-Хронометраж пересборки с нуля (зависимости уже в кеше): конфигурация около 40 секунд,
-полная сборка около 9-10 минут. Первый холодный прогон с установкой зависимостей занял
-около 2 часов, из них установка и сборка vcpkg-пакетов - 1.1 часа.
+**Внимание:** формат конфигов сменился с XML на INI. Старые `router.conf`/`relay.conf` от 3.0.x
+новая версия не читает (`IniFile::parse ... Invalid line 2`). При пересоздании router нужен ещё
+и чистый `host.pub`, иначе `Host public key file already exists. Continuation is impossible.`
+Бэкап старого каталога `C:\ProgramData\aspia` лежал в scratch на время проверки.
+
+Хронометраж на 3.4.3 (замерено 18.11.2026):
+
+- переустановка зависимостей vcpkg под новый `vcpkg.json` (78 пакетов, включая qtbase 6.11.2): **71 минута**
+- конфигурация CMake после этого: секунды
+- полная сборка (1579 шагов, `-j 8`): **18 минут**
+- прогон всех шести тестовых бинарников: ~3 минуты
+
+Первый холодный прогон в августе (с нуля, другой набор пакетов) занял около 2 часов.
 
 ## Синхронизация с апстримом (18.11.2026) - версия 3.4.3
 
@@ -88,6 +99,21 @@ git submodule update --init
 - Артефакты в `builds/local-win-x64` - от 3.0.0. Кеш CMake и vcpkg от другого набора зависимостей,
   поэтому после синхронизации нужна переконфигурация и переустановка пакетов vcpkg (по времени -
   как холодный прогон, до пары часов), затем полная пересборка.
+
+**Сборка 3.4.3 выполнена 18.11.2026** - что пришлось сделать по ходу (всё внесено в скилл):
+
+1. `vcpkg.exe` в подмодуле был от мая, порты от ноября -> `vcpkg-tools.json: schema version 2 is
+   not supported`. Лечение: `bootstrap-vcpkg.bat -disableMetrics` в `vcpkg4aspia`.
+2. Конфигурация падала с `vswhere failed with exit code (2147942408)` / `0x80070008: Недостаточно
+   ресурсов памяти`: терминал Hermes работает под SYSTEM в session 0, а vswhere 3.1.7 там не
+   стартует. Лечение: запускать сборку в интерактивной сессии пользователя (скрипт
+   `.hermes/skills/aspia-extreme/scripts/launch.cs` -> `launch.exe`).
+3. Сборка падала на `desktop_file.pb.h: #error "Protobuf C++ gencode is built with an incompatible
+   version of"` - в каталоге сборки остались .pb.h/.pb.cc от прошлого protoc. Лечение: удалить
+   `builds/local-win-x64/source/proto/*.pb.h|*.pb.cc` (перегенерируются, полной пересборки не требуют).
+
+Итог: 78 пакетов vcpkg переустановлены за 71 минуту, полная сборка 1579 шагов за 18 минут,
+все шесть тестовых бинарников проходят (2115 тестов).
 
 ## Окружение, которое выяснилось по ходу
 
