@@ -239,6 +239,12 @@ add_subdirectory(common)
 add_subdirectory(proto)
 add_subdirectory(third_party)
 
+# RadNET (fork-local): проба выноса движка в DLL с C-ABI. К апстриму отношения не имеет,
+# собирается только под Windows и только когда явно просят.
+if (WIN32)
+    add_subdirectory(engine_probe)
+endif()
+
 if (NOT ASPIA_HOST_ONLY)
     add_subdirectory(client)
 endif()
