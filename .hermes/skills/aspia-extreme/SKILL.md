@@ -124,3 +124,21 @@ Host при запуске без сервиса пишет `Failed to connect t
 - НИКАКИХ обходов и правок апстрим-исходников ради «чтобы собралось» (он отверг исключение atlmfc).
 - Действовать напрямую, без лекций и повторных предупреждений об очевидном.
 - Все артефакты и проекты — только в `D:\.VS\Projects`, мусор за собой убирать.
+
+## Git в этом проекте
+
+- Терминал работает от `NT AUTHORITY\СИСТЕМА`, а папка принадлежит `rafst`, поэтому любой `git`
+  падает с `detected dubious ownership`. Лечится один раз:
+  `git config --global --add safe.directory "D:/.VS/Projects/aspia-extreem"`.
+- `vcpkg4aspia` — отдельный git-репозиторий с деревом сборки (~90 ГБ). Без строки
+  `/vcpkg4aspia/` в `.gitignore` любой `git status` виснет на сканировании гигабайтов.
+  Строка добавлена; если появится снова — проверить `.gitignore` первым делом.
+- Если `git status` всё же оборвался по таймауту, остаётся `.git/index.lock` и следующие
+  команды падают с `Unable to create index.lock`. Удалить: `rm -f .git/index.lock`.
+- Пуш требует токен: `GITHUB_TOKEN` лежит в `D:\NEURO\Hermes\data\hermes\.env`.
+  Токен, засвеченный в переписке, GitHub отзывает (401 Bad credentials), поэтому брать только из `.env`:
+  `TOKEN=$(grep '^GITHUB_TOKEN=' /d/NEURO/Hermes/data/hermes/.env | cut -d= -f2- | tr -d '"'\''
+\n ')`
+  и затем `git push "https://MRafStudio:${TOKEN}@github.com/MRafStudio/aspia.git" extreme`.
+  Ручной ввод токена в командной строке не нужен, а `gh auth login` требует scope `read:org`.
+
