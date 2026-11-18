@@ -119,6 +119,42 @@ Host при запуске без сервиса пишет `Failed to connect t
 - `source/common/` — общие утилиты и ресурсы
 - UI на Qt (виджеты) — именно его планируется заменить обвязкой на .NET
 
+### Где реально проходит граница движок/UI (замерено)
+
+- Движок уже отделён слоем `Worker` (`base/threading/worker.h`, QObject + свой поток). Обмен с UI —
+  `QByteArray` по 13 каналам `CHANNEL_ID_*` и `SharedFrame` (BGRA + stride). Резать по живому не нужно,
+  нужен C-фасад поверх воркеров.
+- Без GUI движок живёт: `base/tests_main.cc` поднимает только `QCoreApplication` + `AsioEventDispatcher`
+  (свой цикл событий на asio) и прогоняет 626 тестов.
+- Строк по дереву: транспорт (`base/net`+`peer`+`crypto`+`threading`+`ipc`) — 136 файлов / 27 217;
+  движок клиента — 17 188; UI клиента — 38 181 (69 %, 143 файла с виджетами);
+  движок хоста — 50 209; UI хоста — 7 327 (13 %); `common` — 28 232.
+- В `base` виджеты трогает ровно один файл — `base/gui_application.cc` (837 строк). QtNetwork и QtSql
+  в движке не используются вообще (сеть на asio, БД на `unofficial::sqlite3`).
+- UI хоста уже отдельный процесс: общается со службой по именованному каналу `org.aspia.host.ui`
+  (`host/host_constants.cc`), протокол protobuf, транспорт `asio::windows::stream_handle` — .NET-трею
+  C++-DLL не нужна вообще.
+
+## Вынос в DLL: грабли, проверенные разбором
+
+Подробный разбор с цифрами и планом — `ENGINE-DLL-SPLIT.md` в корне проекта.
+
+1. **Статический Qt нельзя размножать по DLL.** Сборка статическая (`x64-windows-static`, `/MT`):
+   каждая DLL получит свою копию QtCore со своим `QCoreApplication::self`, своим реестром `QThreadData`
+   и своими метаклассами. `QueuedConnection` между модулями перестаёт работать, `sendPostedEvents()`
+   в модуле без своего инстанса разыменует `nullptr`. Три DLL ⇒ динамический Qt (`x64-windows`, `/MD`,
+   `Qt6Core.dll` в поставке) + отдельный preset; иначе делать одну engine-DLL.
+2. **`/MT` — свой CRT на модуль**: память нельзя освобождать по ту сторону границы. В ABI обязательна
+   своя `aspia_free()`, а кадры и буферы валидны только внутри колбэка.
+3. **Win7 в целях** (`-D_WIN32_WINNT=0x0601` в `source/CMakeLists.txt`) ⇒ обвязка на .NET Framework 4.8;
+   .NET 10 требует Win10 1607+. Интероп-проект делать мультитаргетным (`net48;net10.0-windows`).
+4. **DPI awareness** ставит сам движок в `main()` (Per-Monitor V2). В .NET-хосте его ставит манифест/WPF;
+   расхождение сдвигает координаты мыши и масштаб кадра.
+5. `protoc.exe` для C#-моделей лежит в `builds/local-win-x64/vcpkg_installed/x64-windows-static/tools/protobuf/`.
+   Адресная книга — обычный SQLite (`groups`/`hosts`/`routers`/`settings`), пароли — DPAPI **без entropy**
+   (`base/crypto/os_crypt_win.cc`), мастер-пароль — Argon2id 128 МиБ / 4 итерации / 1 lane + AES-256-GCM
+   (`base/crypto/password_hash.cc`), параметры надо повторить бит в бит.
+
 ## Правила работы с пользователем
 
 - НИКАКИХ обходов и правок апстрим-исходников ради «чтобы собралось» (он отверг исключение atlmfc).
